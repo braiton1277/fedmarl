@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_dataset
 from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
+from flwr_datasets.partitioner import DirichletPartitioner, IidPartitioner
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor
 
@@ -75,31 +75,89 @@ def load_global_testloader(batch_size: int = 128, num_workers: int = 0):
 
 
 def load_data(partition_id: int, num_partitions: int):
-    """Load partition CIFAR10 data."""
-    # Only initialize `FederatedDataset` once
+    """Load partition CIFAR10 data (Dirichlet non-IID) com robustez de split/transform/loader."""
     global fds
     if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
+        partitioner = DirichletPartitioner(
+            num_partitions=num_partitions,
+            partition_by="label",  # coluna a particionar (CIFAR-10)
+            alpha=0.2,             # ↓ => mais não-IID; ↑ => mais IID
+            seed=42,
+        )
         fds = FederatedDataset(
             dataset="uoft-cs/cifar10",
             partitioners={"train": partitioner},
         )
+
+    # Pode retornar um Dataset (com colunas ['img','label']) ou algo com split 'train'
     partition = fds.load_partition(partition_id)
-    # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    pytorch_transforms = Compose(
-        [ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    )
+
+    # Detecta base para split (se tiver 'train' usa, senão usa o próprio dataset)
+    has_keys = callable(getattr(partition, "keys", None))
+    base = partition["train"] if (has_keys and "train" in partition) else partition
+
+    # Split robusto: garante que não zera train/test em partições pequenas
+    n_total = len(base)
+    if n_total <= 1:
+        # tudo em train, test vazio
+        train_ds = base
+        test_ds = base.select([])  # dataset vazio
+    else:
+        test_sz = max(1, min(n_total - 1, int(round(0.2 * n_total))))
+        split = base.train_test_split(test_size=test_sz, seed=42)
+        train_ds, test_ds = split["train"], split["test"]
+
+    # Transforms (iguais ao IID)
+    pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
     def apply_transforms(batch):
-        """Apply transforms to the partition from FederatedDataset."""
         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
         return batch
 
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(partition_train_test["train"], batch_size=32, shuffle=True)
-    testloader = DataLoader(partition_train_test["test"], batch_size=32)
+    # Aplica nas duas partições
+    train_ds.set_transform(apply_transforms)
+    test_ds.set_transform(apply_transforms)
+
+    # DataLoaders: batch size nunca maior que o dataset; drop_last=False (evita 0 batches)
+    n_train = len(train_ds)
+    n_test = len(test_ds)
+    bs_train = min(32, max(1, n_train))
+    bs_test = min(32, max(1, n_test if n_test > 0 else 1))
+
+    trainloader = DataLoader(train_ds, batch_size=bs_train, shuffle=True, drop_last=False, num_workers=0)
+    testloader  = DataLoader(test_ds,  batch_size=bs_test,  shuffle=False, drop_last=False, num_workers=0)
+
+    # Log opcional
+    print(f"[cid={partition_id}] n_total={n_total} n_train={n_train} n_test={n_test} bs_train={bs_train}")
+
     return trainloader, testloader
+
+# def load_data(partition_id: int, num_partitions: int):
+#     """Load partition CIFAR10 data."""
+#     # Only initialize `FederatedDataset` once
+#     global fds
+#     if fds is None:
+#         partitioner = IidPartitioner(num_partitions=num_partitions)
+#         fds = FederatedDataset(
+#             dataset="uoft-cs/cifar10",
+#             partitioners={"train": partitioner},
+#         )
+#     partition = fds.load_partition(partition_id)
+#     # Divide data on each node: 80% train, 20% test
+#     partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
+#     pytorch_transforms = Compose(
+#         [ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+#     )
+
+#     def apply_transforms(batch):
+#         """Apply transforms to the partition from FederatedDataset."""
+#         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
+#         return batch
+
+#     partition_train_test = partition_train_test.with_transform(apply_transforms)
+#     trainloader = DataLoader(partition_train_test["train"], batch_size=32, shuffle=True)
+#     testloader = DataLoader(partition_train_test["test"], batch_size=32)
+#     return trainloader, testloader
 
 
 def train(net, trainloader, epochs, lr, device):

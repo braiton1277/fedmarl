@@ -46,8 +46,9 @@ def main(grid: Grid, context: Context) -> None:
     all_node_ids: list[int] = []
     while len(all_node_ids) < min_nodes:
         all_node_ids = list(grid.get_node_ids())
+        node_ids_probe = all_node_ids[:]   
         if len(all_node_ids) >= min_nodes:
-            node_ids = all_node_ids  # Usa todos os nós disponíveis
+            node_ids = node_ids_probe  # Usa todos os nós disponíveis
             break
         log(INFO, "Aguardando conexões de clientes...")
         sleep(2)
@@ -113,23 +114,43 @@ def main(grid: Grid, context: Context) -> None:
 
         log(INFO, "\n==== Iniciando rodada de treino ====")
         log(INFO,t)
+        
+
+        # Loop and wait until enough nodes are available.
+        all_node_ids: list[int] = []
+        while len(all_node_ids) < min_nodes:
+            all_node_ids = list(grid.get_node_ids())
+            if len(all_node_ids) >= min_nodes:
+                # Sample nodes
+                #num_to_sample = int(len(all_node_ids) * fraction_sample)
+                k_select = int(len(all_node_ids) * fraction_sample)
+                q_score_by_node = {}
+                q_score_by_node = {nid: delta for (nid, q0, q1, delta) in q_list}
+                eps = epsilon_by_round(t)
+                do_explore = (random.random() < eps) or (len(q_score_by_node) < k_select)
+                if do_explore:
+                    node_ids_explore = random.sample(all_node_ids, k_select)
+                    log(INFO, f"[Seleção] Exploração (ε={eps:.3f}) → {k_select} nós: {sorted(node_ids_explore)}")
+                else:
+                    # Exploitation: top-k pelos maiores scores em q_list
+                    scored = [(nid, q_score_by_node.get(nid, float('-inf')))           # FIX: cria 'scored'
+                            for nid in all_node_ids]
+                    scored.sort(key=lambda x: x[1], reverse=True)
+
+                    node_ids_explore = [nid for (nid, score) in scored[:k_select]]
+                    top_str = ", ".join(f"{nid}:{score:.4f}" for nid, score in scored[:k_select])
+                    log(INFO, f"[Seleção][EXPLOIT] ε={eps:.3f} → Top-{k_select} por ΔQ: [{top_str}]")
+                    # lista final de selecionados (após eventual complemento aleatório)
+                    log(INFO, f"[Seleção][EXPLOIT] Selecionados ({k_select}/{len(all_node_ids)}): {sorted(node_ids)}")
+                #node_ids = random.sample(all_node_ids, num_to_sample)
+                break
+            log(INFO, "Waiting for nodes to connect...")
+            sleep(2)
+
+        log(INFO, "Sampled %s nodes (out of %s)", len(node_ids_explore), len(all_node_ids))
         for server_round in range(num_rounds):
             log(INFO, "")  # Add newline for log readability
             log(INFO, "Starting round %s/%s", server_round + 1, num_rounds)
-
-            # Loop and wait until enough nodes are available.
-            all_node_ids: list[int] = []
-            while len(all_node_ids) < min_nodes:
-                all_node_ids = list(grid.get_node_ids())
-                if len(all_node_ids) >= min_nodes:
-                    # Sample nodes
-                    num_to_sample = int(len(all_node_ids) * fraction_sample)
-                    node_ids = random.sample(all_node_ids, num_to_sample)
-                    break
-                log(INFO, "Waiting for nodes to connect...")
-                sleep(2)
-
-            log(INFO, "Sampled %s nodes (out of %s)", len(node_ids), len(all_node_ids))
 
             # Create messages
             gmodel_record = ArrayRecord(global_model.state_dict())
@@ -140,7 +161,7 @@ def main(grid: Grid, context: Context) -> None:
                 }
             )
             messages = construct_messages(
-                node_ids, recorddict, MessageType.TRAIN, server_round
+                node_ids_explore, recorddict, MessageType.TRAIN, server_round
             )
 
             # Send messages and wait for all results
@@ -232,11 +253,11 @@ def main(grid: Grid, context: Context) -> None:
                 # uniforme:
                 s, a, r, s_next = buffer.sample_uniform(batch_size=2, device=device)
 
-                print(">>> SHAPES / DTYPES")
-                print("s      :", s.shape,  s.dtype)      # [2, N, d]
-                print("a      :", a.shape,  a.dtype)      # [2, N], torch.int64
-                print("r      :", r.shape,  r.dtype)      # [2],   torch.float32
-                print("s_next :", s_next.shape, s_next.dtype)
+                # print(">>> SHAPES / DTYPES")
+                # print("s      :", s.shape,  s.dtype)      # [2, N, d]
+                # print("a      :", a.shape,  a.dtype)      # [2, N], torch.int64
+                # print("r      :", r.shape,  r.dtype)      # [2],   torch.float32
+                # print("s_next :", s_next.shape, s_next.dtype)
 
                 # checagens rápidas
                 B, N, d = s.shape
@@ -244,20 +265,20 @@ def main(grid: Grid, context: Context) -> None:
                 assert r.shape == (B,)
                 assert s_next.shape == (B, N, d)
 
-                # conteúdo das duas amostras
-                print("\n>>> AMOSTRA 0")
-                print("s[0]:\n", s[0])               # [N, d]
-                print("a[0]:", a[0].tolist())        # [N]
-                print("r[0]:", float(r[0]))          # escalar
-                print("s_next[0]:\n", s_next[0])     # [N, d]
+            #     # conteúdo das duas amostras
+            #     print("\n>>> AMOSTRA 0")
+            #     print("s[0]:\n", s[0])               # [N, d]
+            #     print("a[0]:", a[0].tolist())        # [N]
+            #     print("r[0]:", float(r[0]))          # escalar
+            #     print("s_next[0]:\n", s_next[0])     # [N, d]
 
-                print("\n>>> AMOSTRA 1")
-                print("s[1]:\n", s[1])
-                print("a[1]:", a[1].tolist())
-                print("r[1]:", float(r[1]))
-                print("s_next[1]:\n", s_next[1])
-            else:
-                print(f"replay insuficiente: {len(buffer)} < {batch_size}")
+            #     print("\n>>> AMOSTRA 1")
+            #     print("s[1]:\n", s[1])
+            #     print("a[1]:", a[1].tolist())
+            #     print("r[1]:", float(r[1]))
+            #     print("s_next[1]:\n", s_next[1])
+            # else:
+            #     print(f"replay insuficiente: {len(buffer)} < {batch_size}")
 
                 # OU híbrido (recomendado p/ novas transições entrarem rápido):
                 #s, a, r, s_next = buffer.sample_hybrid(batch_size=32, recent_k=512, m_recent=8, device=device)
@@ -274,7 +295,8 @@ def main(grid: Grid, context: Context) -> None:
                         pt.data.mul_(1 - tau).add_(tau * p.data)
 
 
-
+def epsilon_by_round(t, eps_start=0.2, eps_end=0.02, decay=200):
+    return eps_end + (eps_start - eps_end) * math.exp(-t/decay)
 
 def construct_messages(
     node_ids: list[int],
@@ -311,47 +333,3 @@ def average_state_dicts(state_dicts):
 
 
 
-def select_clients_by_q(
-    qnet,
-    all_node_ids,
-    get_state_fn,      # fn: node_id -> torch.tensor([obs_dim]), no device da rede ou CPU
-    epsilon=0.05,      # ε-greedy
-    budget_k=None,     # None = argmax por agente (nº variável); int = força top-K
-    score_mode="delta",# "delta" = Q(s,1)-Q(s,0) | "q1" = Q(s,1)
-):
-    if not all_node_ids:
-        return []
-
-    device = next(qnet.parameters()).device
-    states = [get_state_fn(nid) for nid in all_node_ids]
-    s_batch = torch.stack(states, dim=0).to(device)  # (N, obs_dim)
-
-    was_training = qnet.training
-    qnet.eval()
-    with torch.no_grad():
-        q = qnet(s_batch)  # (N, 2): coluna 0=Q(s,0), coluna 1=Q(s,1)
-    if was_training:
-        qnet.train()
-
-    N = q.size(0)
-
-    # Estilo artigo (sem orçamento fixo): cada agente decide argmax(Q)
-    if budget_k is None:
-        if random.random() < epsilon:
-            actions = torch.randint(low=0, high=2, size=(N,), device=q.device)
-        else:
-            actions = torch.argmax(q, dim=1)
-        idx = (actions == 1).nonzero(as_tuple=False).flatten().tolist()
-        return [all_node_ids[i] for i in idx]
-
-    # Com orçamento K: ranqueia e pega top-K
-    if score_mode == "delta":
-        scores = q[:, 1] - q[:, 0]
-    elif score_mode == "q1":
-        scores = q[:, 1]
-    else:
-        raise ValueError("score_mode deve ser 'delta' ou 'q1'.")
-
-    k = min(budget_k, N)
-    topk_idx = torch.topk(scores, k=k, largest=True).indices.tolist()
-    return [all_node_ids[i] for i in topk_idx]
