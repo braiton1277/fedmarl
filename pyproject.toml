@@ -26,11 +26,11 @@ clientapp = "app_pytorch.client_app:app"
 
 [tool.flwr.app.config]
 num-server-rounds = 3
-fraction-sample = 0.5
+fraction-sample = 0.2
 local-epochs = 3
 
 [tool.flwr.federations]
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 10
+options.num-supernodes = 25

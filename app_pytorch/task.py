@@ -80,7 +80,7 @@ def load_data(partition_id: int, num_partitions: int):
     if fds is None:
         partitioner = DirichletPartitioner(
             num_partitions=num_partitions,
-            partition_by="label",  # coluna a particionar (CIFAR-10)
+            partition_by="label",  # 
             alpha=0.2,             # ↓ => mais não-IID; ↑ => mais IID
             seed=42,
         )
@@ -89,14 +89,14 @@ def load_data(partition_id: int, num_partitions: int):
             partitioners={"train": partitioner},
         )
 
-    # Pode retornar um Dataset (com colunas ['img','label']) ou algo com split 'train'
+    
     partition = fds.load_partition(partition_id)
 
-    # Detecta base para split (se tiver 'train' usa, senão usa o próprio dataset)
+    
     has_keys = callable(getattr(partition, "keys", None))
     base = partition["train"] if (has_keys and "train" in partition) else partition
 
-    # Split robusto: garante que não zera train/test em partições pequenas
+    
     n_total = len(base)
     if n_total <= 1:
         # tudo em train, test vazio
@@ -107,18 +107,18 @@ def load_data(partition_id: int, num_partitions: int):
         split = base.train_test_split(test_size=test_sz, seed=42)
         train_ds, test_ds = split["train"], split["test"]
 
-    # Transforms (iguais ao IID)
+    
     pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
     def apply_transforms(batch):
         batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
         return batch
 
-    # Aplica nas duas partições
+    
     train_ds.set_transform(apply_transforms)
     test_ds.set_transform(apply_transforms)
 
-    # DataLoaders: batch size nunca maior que o dataset; drop_last=False (evita 0 batches)
+    
     n_train = len(train_ds)
     n_test = len(test_ds)
     bs_train = min(32, max(1, n_train))
@@ -127,7 +127,7 @@ def load_data(partition_id: int, num_partitions: int):
     trainloader = DataLoader(train_ds, batch_size=bs_train, shuffle=True, drop_last=False, num_workers=0)
     testloader  = DataLoader(test_ds,  batch_size=bs_test,  shuffle=False, drop_last=False, num_workers=0)
 
-    # Log opcional
+    
     print(f"[cid={partition_id}] n_total={n_total} n_train={n_train} n_test={n_test} bs_train={bs_train}")
 
     return trainloader, testloader

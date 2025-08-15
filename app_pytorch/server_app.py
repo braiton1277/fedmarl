@@ -193,7 +193,7 @@ def main(grid: Grid, context: Context) -> None:
 
         # Local evaluation
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        global_model.to(device)
+        global_model.to("cpu")
 
         _, eval_acc = test_fn(
         global_model,

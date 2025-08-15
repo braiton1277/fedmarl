@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-#usar gpu para pegar uns 100 agentes e fazer um offline warmup para encher o buffer
 
 class AgentMARL:
     def __init__(self, node_id):
@@ -17,8 +16,7 @@ class AgentMARL:
         print(f"[Agente] Inicializado agente para o cliente com node_id={node_id}")
       
     def state(self, current_state, qnet, round):
-        #chamar a rede
-        #ver como todos da mesma rodada serao guardados e confirmar se os da mesma rodada selvam juntos
+        
         
         state_tensor = torch.tensor([[current_state]], dtype=torch.float32)
         if self.last_state is not None and self.last_action is not None:
@@ -125,11 +123,11 @@ class AgentMARL:
             print("Q_online(s)[b,:,:]  (dois Q por agente):")
             print(q_all[b].cpu())              # [N, 2]
 
-            # também pode ser útil ver a* e Q_target(s', a*)
+            
             print("a* (argmax online em s_next) [b,:]:")
             print(a_star[b].cpu())             # [N]
 
-            # Reconstrói Q_target(s_next) por agente/ação só pra visualização
+            
             q_next_tgt = q_next_flat_tgt.reshape(B, N, A)
             print("Q_target(s_next)[b,:,:] (dois Q por agente):")
             print(q_next_tgt[b].cpu())         # [N, 2]
