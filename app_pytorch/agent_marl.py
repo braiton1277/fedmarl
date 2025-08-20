@@ -117,25 +117,25 @@ class AgentMARL:
         loss = F.smooth_l1_loss(q_tot, y) if use_huber else F.mse_loss(q_tot, y)
 
 
-        b = 0
-        with torch.no_grad():
-            print("\n[DEBUG VDN]")
-            print("Q_online(s)[b,:,:]  (dois Q por agente):")
-            print(q_all[b].cpu())              # [N, 2]
+        # b = 0
+        # with torch.no_grad():
+        #     print("\n[DEBUG VDN]")
+        #     print("Q_online(s)[b,:,:]  (dois Q por agente):")
+        #     print(q_all[b].cpu())              # [N, 2]
 
             
-            print("a* (argmax online em s_next) [b,:]:")
-            print(a_star[b].cpu())             # [N]
+        #     print("a* (argmax online em s_next) [b,:]:")
+        #     print(a_star[b].cpu())             # [N]
 
             
-            q_next_tgt = q_next_flat_tgt.reshape(B, N, A)
-            print("Q_target(s_next)[b,:,:] (dois Q por agente):")
-            print(q_next_tgt[b].cpu())         # [N, 2]
+        #     q_next_tgt = q_next_flat_tgt.reshape(B, N, A)
+        #     print("Q_target(s_next)[b,:,:] (dois Q por agente):")
+        #     print(q_next_tgt[b].cpu())         # [N, 2]
 
-            print(f"q_tot[b]:     {float(q_tot[b]):.6f}")
-            print(f"q_tot_next[b]:{float(q_tot_next[b]):.6f}")
-            print(f"y[b]:         {float(y[b]):.6f}")
-            print(f"loss:         {float(loss):.6f}")
+        #     print(f"q_tot[b]:     {float(q_tot[b]):.6f}")
+        #     print(f"q_tot_next[b]:{float(q_tot_next[b]):.6f}")
+        #     print(f"y[b]:         {float(y[b]):.6f}")
+        #     print(f"loss:         {float(loss):.6f}")
 
         return loss
 

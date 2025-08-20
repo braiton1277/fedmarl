@@ -1,0 +1,59 @@
+{
+  "t": 1,
+  "node_id": 3909707494743001895,
+  "client_id": 21,
+  "num_partitions": 25,
+  "alpha": 0.2,
+  "n_total": 716,
+  "n_train": 573,
+  "n_test": 143,
+  "train_per_class": {
+    "0": {
+      "count": 6,
+      "pct": 1.0471204188481675,
+      "name": "airplane"
+    },
+    "1": {
+      "count": 1,
+      "pct": 0.17452006980802792,
+      "name": "automobile"
+    },
+    "2": {
+      "count": 399,
+      "pct": 69.63350785340315,
+      "name": "bird"
+    },
+    "3": {
+      "count": 162,
+      "pct": 28.272251308900522,
+      "name": "cat"
+    },
+    "8": {
+      "count": 5,
+      "pct": 0.8726003490401396,
+      "name": "ship"
+    }
+  },
+  "test_per_class": {
+    "0": {
+      "count": 2,
+      "pct": 1.3986013986013985,
+      "name": "airplane"
+    },
+    "2": {
+      "count": 103,
+      "pct": 72.02797202797203,
+      "name": "bird"
+    },
+    "3": {
+      "count": 37,
+      "pct": 25.874125874125873,
+      "name": "cat"
+    },
+    "8": {
+      "count": 1,
+      "pct": 0.6993006993006993,
+      "name": "ship"
+    }
+  }
+}

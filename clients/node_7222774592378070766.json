@@ -1,0 +1,69 @@
+{
+  "t": 1,
+  "node_id": 7222774592378070766,
+  "client_id": 1,
+  "num_partitions": 25,
+  "alpha": 0.2,
+  "n_total": 1862,
+  "n_train": 1490,
+  "n_test": 372,
+  "train_per_class": {
+    "0": {
+      "count": 363,
+      "pct": 24.36241610738255,
+      "name": "airplane"
+    },
+    "1": {
+      "count": 142,
+      "pct": 9.53020134228188,
+      "name": "automobile"
+    },
+    "4": {
+      "count": 3,
+      "pct": 0.20134228187919462,
+      "name": "deer"
+    },
+    "5": {
+      "count": 899,
+      "pct": 60.33557046979866,
+      "name": "dog"
+    },
+    "6": {
+      "count": 28,
+      "pct": 1.8791946308724832,
+      "name": "frog"
+    },
+    "9": {
+      "count": 55,
+      "pct": 3.6912751677852347,
+      "name": "truck"
+    }
+  },
+  "test_per_class": {
+    "0": {
+      "count": 99,
+      "pct": 26.612903225806452,
+      "name": "airplane"
+    },
+    "1": {
+      "count": 34,
+      "pct": 9.13978494623656,
+      "name": "automobile"
+    },
+    "5": {
+      "count": 211,
+      "pct": 56.72043010752688,
+      "name": "dog"
+    },
+    "6": {
+      "count": 12,
+      "pct": 3.225806451612903,
+      "name": "frog"
+    },
+    "9": {
+      "count": 16,
+      "pct": 4.301075268817204,
+      "name": "truck"
+    }
+  }
+}

@@ -32,14 +32,17 @@ def evaluate(msg: Message, context: Context):
 @app.train()
 def train(msg: Message, context: Context):
 
+
+    t = msg.content["node-info"]["server_round"]
+    node_id = msg.content["node-info"]["node_id"]
     # Prepare
-    model, device, data_loader = setup_client(msg, context, is_train=True)
+    model, device, data_loader = setup_client(t, node_id ,msg, context, is_train=True)
 
     # Local training
     local_epochs = context.run_config["local-epochs"]
     lr = msg.content["train-config"]["lr"]
     mode = msg.content["train-config"]["mode"]
-  
+   
 
     if mode == "probing":
         local_epochs = 1
@@ -62,7 +65,7 @@ def train(msg: Message, context: Context):
     return Message(content=content, reply_to=msg)
 
 
-def setup_client(msg: Message, context: Context, is_train: bool):
+def setup_client(t, node_id, msg: Message, context: Context, is_train: bool):
 
     # Instantiate model
     model = Net()
@@ -75,6 +78,6 @@ def setup_client(msg: Message, context: Context, is_train: bool):
     # Load partition
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    trainloader, valloader = load_data(partition_id, num_partitions)
+    trainloader, valloader = load_data(t, node_id, partition_id, num_partitions)
 
     return model, device, trainloader if is_train else valloader

@@ -1,0 +1,59 @@
+{
+  "t": 1,
+  "node_id": 16751987957214621787,
+  "client_id": 23,
+  "num_partitions": 25,
+  "alpha": 0.2,
+  "n_total": 600,
+  "n_train": 480,
+  "n_test": 120,
+  "train_per_class": {
+    "3": {
+      "count": 21,
+      "pct": 4.375,
+      "name": "cat"
+    },
+    "4": {
+      "count": 9,
+      "pct": 1.875,
+      "name": "deer"
+    },
+    "5": {
+      "count": 447,
+      "pct": 93.125,
+      "name": "dog"
+    },
+    "6": {
+      "count": 2,
+      "pct": 0.4166666666666667,
+      "name": "frog"
+    },
+    "8": {
+      "count": 1,
+      "pct": 0.20833333333333334,
+      "name": "ship"
+    }
+  },
+  "test_per_class": {
+    "3": {
+      "count": 2,
+      "pct": 1.6666666666666667,
+      "name": "cat"
+    },
+    "4": {
+      "count": 5,
+      "pct": 4.166666666666667,
+      "name": "deer"
+    },
+    "5": {
+      "count": 112,
+      "pct": 93.33333333333333,
+      "name": "dog"
+    },
+    "6": {
+      "count": 1,
+      "pct": 0.8333333333333334,
+      "name": "frog"
+    }
+  }
+}

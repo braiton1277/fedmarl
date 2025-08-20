@@ -1,6 +1,9 @@
 import math
 import random
+import shutil
+from copy import deepcopy
 from logging import INFO, WARN
+from pathlib import Path
 from time import sleep
 
 import torch
@@ -17,7 +20,11 @@ from app_pytorch.task import test as test_fn
 # from reply_buffer import ReplayBuffer
 
 
-
+def cleanup_stats_dir(dir_path="clients"):
+    p = Path(dir_path).resolve()
+    shutil.rmtree(p, ignore_errors=True)  # remove tudo (inclusive subpastas)
+    p.mkdir(parents=True, exist_ok=True)  # recria vazia
+    print(f"[server] diretório limpo: {p}")
 
 # Create ServerApp
 app = ServerApp()
@@ -57,6 +64,8 @@ def main(grid: Grid, context: Context) -> None:
     t =0
 
     while t < 4:
+        if t == 0:
+            cleanup_stats_dir("clients")
         t+=1
         log(INFO,t)
         log(INFO, "Clientes conectados para probing: %s", node_ids)
@@ -70,7 +79,7 @@ def main(grid: Grid, context: Context) -> None:
             }
         )
         
-        messages = construct_messages(
+        messages = construct_messages(t,
             node_ids, recorddict, MessageType.TRAIN, server_round=0
         )
 
@@ -140,7 +149,7 @@ def main(grid: Grid, context: Context) -> None:
                     node_ids_explore = [nid for (nid, score) in scored[:k_select]]
                     top_str = ", ".join(f"{nid}:{score:.4f}" for nid, score in scored[:k_select])
                     log(INFO, f"[Seleção][EXPLOIT] ε={eps:.3f} → Top-{k_select} por ΔQ: [{top_str}]")
-                    # lista final de selecionados (após eventual complemento aleatório)
+                    # lista final de selecionados 
                     log(INFO, f"[Seleção][EXPLOIT] Selecionados ({k_select}/{len(all_node_ids)}): {sorted(node_ids)}")
                 #node_ids = random.sample(all_node_ids, num_to_sample)
                 break
@@ -149,7 +158,7 @@ def main(grid: Grid, context: Context) -> None:
 
         log(INFO, "Sampled %s nodes (out of %s)", len(node_ids_explore), len(all_node_ids))
         for server_round in range(num_rounds):
-            log(INFO, "")  # Add newline for log readability
+            log(INFO, "")  
             log(INFO, "Starting round %s/%s", server_round + 1, num_rounds)
 
             # Create messages
@@ -160,7 +169,7 @@ def main(grid: Grid, context: Context) -> None:
                     "train-config": ConfigRecord({"lr": 0.01, "mode": "train"}),
                 }
             )
-            messages = construct_messages(
+            messages = construct_messages(t,
                 node_ids_explore, recorddict, MessageType.TRAIN, server_round
             )
 
@@ -217,17 +226,18 @@ def main(grid: Grid, context: Context) -> None:
             s_tp1 = torch.stack(joint_next_states).detach().cpu().float()   # [N, ...]
             r_t   = torch.tensor(float(r_t), dtype=torch.float32)           # []
 
-            # Flatten a partir da dim=1 para garantir [N, d] mesmo se vier [N, d, 1] etc.
+            #
             if s_t.ndim   > 2: s_t   = s_t.flatten(1)
             if s_tp1.ndim > 2: s_tp1 = s_tp1.flatten(1)
 
-            # Sanity checks
+            
             N, d = s_t.shape
             assert a_t.shape   == (N,),      f"a_t shape {a_t.shape} != {(N,)}"
             assert s_tp1.shape == (N, d),    f"s_tp1 shape {s_tp1.shape} != {(N, d)}"
 
-            # Salva a transição (processo contínuo, sem 'done')
+           
             buffer.append((s_t, a_t, r_t, s_tp1))
+            print(f"# amostras no replay: {len(buffer)}")
             
         U_prev = U_curr 
         acc_prev = eval_acc 
@@ -242,7 +252,7 @@ def main(grid: Grid, context: Context) -> None:
         learn_start   = 128          # mínimo no buffer para começar a aprender
         gradient_steps = 16          # G updates por rodada (aumente depois p/ 32)
         gamma         = 0.99
-        tau           = 0.01         # Polyak (soft update) da target
+        tau           = 0.01         
         clip_grad     = 10.0
         opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
         if len(buffer) >= 2:
@@ -280,7 +290,7 @@ def main(grid: Grid, context: Context) -> None:
             # else:
             #     print(f"replay insuficiente: {len(buffer)} < {batch_size}")
 
-                # OU híbrido (recomendado p/ novas transições entrarem rápido):
+                # OU híbrido (recomendado p/ novas transiçoes entrarem rapido):
                 #s, a, r, s_next = buffer.sample_hybrid(batch_size=32, recent_k=512, m_recent=8, device=device)
 
                 loss = AgentMARL.vdn_double_dqn_loss(qnet, target_qnet, s, a, r, s_next, gamma)
@@ -298,7 +308,7 @@ def main(grid: Grid, context: Context) -> None:
 def epsilon_by_round(t, eps_start=0.2, eps_end=0.02, decay=200):
     return eps_end + (eps_start - eps_end) * math.exp(-t/decay)
 
-def construct_messages(
+def construct_messages(t,
     node_ids: list[int],
     record: RecordDict,
     message_type: MessageType,
@@ -307,8 +317,17 @@ def construct_messages(
 
     messages = []
     for node_id in node_ids:  # one message for each node
+
+        rec = RecordDict(deepcopy(dict(record)))  # copia rala do payload base
+        rec["node-info"] = ConfigRecord({
+        "server_round": t,
+        "node_id": node_id,
+        # "partition_id": pid_map.get(node_id, None),  # se quiser também
+        })
+
+
         message = Message(
-            content=record,
+            content=rec,
             message_type=message_type,  # target method in ClientApp
             dst_node_id=node_id,
             group_id=str(server_round),
