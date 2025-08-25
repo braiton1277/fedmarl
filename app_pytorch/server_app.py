@@ -19,6 +19,15 @@ from app_pytorch.task import test as test_fn
 
 # from reply_buffer import ReplayBuffer
 
+#começar com buffer cheio talvez 100 
+
+# escalar recompensa
+# r_scale = 100.0
+# r_t = torch.tensor(float(r_scale * (U_curr - U_prev)), dtype=torch.float32)
+
+#fazer 1000 rodadas com 256 min
+
+#ver como fazer o evaluate
 
 def cleanup_stats_dir(dir_path="clients"):
     p = Path(dir_path).resolve()
@@ -34,11 +43,19 @@ app = ServerApp()
 def main(grid: Grid, context: Context) -> None:
     # num_rounds = context.run_config["num-server-rounds"]
     num_rounds = 4
+    num_rounds_total = 100
     min_nodes = 2
     fraction_sample = context.run_config["fraction-sample"]
-    qnet = QNet(obs_dim=1, hidden=128)
-    target_qnet = QNet(obs_dim=1, hidden=128)
+    #device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
+    qnet = QNet(obs_dim=1, hidden=128).to(device)
+    target_qnet = QNet(obs_dim=1, hidden=128).to(device)
+    target_qnet.load_state_dict(qnet.state_dict())
+    opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
     buffer = ReplayBuffer(capacity=50_000)
+    
+
+
     # Inicializa o modelo global
     global_model = Net()
     global_model_key = "model"
@@ -60,7 +77,7 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "%d Clientes conectados com agente: %s",len(node_ids_agents), node_ids_agents)
 
     log(INFO, "\n==== Iniciando rodada de probing ====")
-    while t < num_rounds:
+    while t < num_rounds_total:
         if t == 0:
             cleanup_stats_dir("clients")
         t+=1
@@ -108,20 +125,16 @@ def main(grid: Grid, context: Context) -> None:
                 node_id = msg.metadata.src_node_id
                 print(f"[Servidor] Mensagem recebida do node_id={node_id}")
                 probing_loss_state = msg.content["train_metrics"]["train_loss"]
-                #transition = agents[node_id].state(probing_loss_state, qnet, t)
-                q = agents[node_id].q_value(probing_loss_state,qnet)
+                with torch.no_grad():
+                    s_probe = torch.tensor([[float(probing_loss_state)]],
+                                        dtype=torch.float32, device=device)  # [1,1]
+                    q = agents[node_id].q_value(s_probe,qnet)
                 q0 = q[0].item()
                 q1 = q[1].item()
                 delta = q1 - q0
                 q_msg = f"[Q] node_id={node_id}  Q(s,0)={q0:.4f}  Q(s,1)={q1:.4f}  Δ={delta:.4f}  Ploss={probing_loss_state:.4f}"
                 print(q_msg)
                 q_list.append((node_id, q0, q1, delta, probing_loss_state))
-                # if transition is not None:
-                #     s, a, r, s_next, t = transition
-                #     joint_states.append(s)
-                #     joint_actions.append(a)
-                #     joint_next_states.append(s_next)
-                #     print(transition)
                 probing_losses.append(msg.content["train_metrics"]["train_loss"])
             else:
                 log(WARN, f"Erro na mensagem {msg.metadata.message_id}")
@@ -146,7 +159,7 @@ def main(grid: Grid, context: Context) -> None:
             continue
         
         k_select = max(1, int(len(node_ids)*0.6))
-        eps = epsilon_by_round(t, num_rounds, start=1.0, end=0.05, scheme="exp", warmup=20)
+        eps = epsilon_by_round(t, num_rounds_total, start=1.0, end=0.05, scheme="exp", warmup=20)
        
 
         if (random.random() < eps) or (not q_by_id):
@@ -231,7 +244,6 @@ def main(grid: Grid, context: Context) -> None:
         log(INFO, "\n==== Iniciando rodada de evaluate global ====")
 
         # Local evaluation
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         global_model.to("cpu")
 
         _, eval_acc = test_fn(
@@ -279,15 +291,22 @@ def main(grid: Grid, context: Context) -> None:
 
         #print(buffer.storage) 
 
-        batch_size    = 32
-        learn_start   = 128         
+        # batch_size = 64
+        # learn_start = 256
+        # updates_per_round = 8
+        # gamma = 0.99
+        # tau = 0.01
+        # clip_grad = 10.0
+
+
+
+        batch_size    = 32    
         gradient_steps = min(32, max(1, len(buffer) // (8*batch_size)))        
         gamma         = 0.99
         tau           = 0.01         
         clip_grad     = 10.0
         target_update_every  = None
-        opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
-        if len(buffer) >= 32:
+        if len(buffer) >= 50:
             log(INFO, "\n==== Iniciando Treinamento DQN e agregação VDN ====")
             log(INFO, "VDN: replay=%d, batch=%d ⇒ gradient_steps=%d",
             len(buffer), batch_size, gradient_steps)
@@ -295,7 +314,7 @@ def main(grid: Grid, context: Context) -> None:
 
             for _ in range(gradient_steps):
                 
-                s, a, r, s_next = buffer.sample_uniform(batch_size=16, device=device)
+                s, a, r, s_next = buffer.sample_uniform(batch_size=32, device=device)
 
                 # print(">>> SHAPES / DTYPES")
                 # print("s      :", s.shape,  s.dtype)      # [2, N, d]
@@ -322,8 +341,7 @@ def main(grid: Grid, context: Context) -> None:
                         pt.data.mul_(1 - tau).add_(tau * p.data)
 
 
-def epsilon_by_round(t, eps_start=0.2, eps_end=0.02, decay=200):
-    return eps_end + (eps_start - eps_end) * math.exp(-t/decay)
+
 
 def construct_messages(t,
     node_ids: list[int],
