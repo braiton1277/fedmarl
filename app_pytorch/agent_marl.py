@@ -77,7 +77,7 @@ class AgentMARL:
         r,          # [B]     (float)
         s_next,     # [B, N, d]
         gamma: float,
-        mask: torch.Tensor | None = None,   # [B, N] bool/0-1 (opcional)
+        mask: torch.Tensor | None = None,  
         use_huber: bool = True,
     ):
         """

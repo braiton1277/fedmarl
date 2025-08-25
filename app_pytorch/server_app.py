@@ -32,43 +32,56 @@ app = ServerApp()
 
 @app.main()
 def main(grid: Grid, context: Context) -> None:
-    num_rounds = context.run_config["num-server-rounds"]
+    # num_rounds = context.run_config["num-server-rounds"]
+    num_rounds = 4
     min_nodes = 2
     fraction_sample = context.run_config["fraction-sample"]
     qnet = QNet(obs_dim=1, hidden=128)
     target_qnet = QNet(obs_dim=1, hidden=128)
     buffer = ReplayBuffer(capacity=50_000)
-    joint_states, joint_actions = [], []
-    joint_next_states = []
     # Inicializa o modelo global
     global_model = Net()
     global_model_key = "model"
-    teste_global = load_global_testloader()
-    acc_prev = None          # ainda não existe recompensa
+    teste_global = load_global_testloader()        
     U_prev   = None
+    pending_S, pending_A, pending_r = None, None, None
+    log(INFO, "\n==== Conectado clientes ====")
 
-    log(INFO, "\n==== Iniciando rodada única de probing ====")
 
     # Espera clientes suficientes
     all_node_ids: list[int] = []
+    all_node_ids = list(grid.get_node_ids())
     while len(all_node_ids) < min_nodes:
-        all_node_ids = list(grid.get_node_ids())
-        node_ids_probe = all_node_ids[:]   
-        if len(all_node_ids) >= min_nodes:
-            node_ids = node_ids_probe  # Usa todos os nós disponíveis
-            break
-        log(INFO, "Aguardando conexões de clientes...")
-        sleep(2)
+            all_node_ids = list(grid.get_node_ids())
 
-    agents = {node_id: AgentMARL(node_id) for node_id in node_ids}
+    node_ids_agents = all_node_ids[:]
+    agents = {node_id: AgentMARL(node_id) for node_id in node_ids_agents}
     t =0
+    log(INFO, "%d Clientes conectados com agente: %s",len(node_ids_agents), node_ids_agents)
 
-    while t < 4:
+    log(INFO, "\n==== Iniciando rodada de probing ====")
+    while t < num_rounds:
         if t == 0:
             cleanup_stats_dir("clients")
         t+=1
-        log(INFO,t)
-        log(INFO, "Clientes conectados para probing: %s", node_ids)
+        log(INFO, "Rodada de numero: %d",t)
+        
+        
+        
+        if len(all_node_ids) >= min_nodes:
+            num_to_sample = int(len(all_node_ids) * 0.6)
+            node_ids = random.sample(all_node_ids, num_to_sample)
+        else:
+            log(INFO, "Não há nós suficiente")
+            break
+
+        log(INFO, "Waiting for nodes to connect...")
+        sleep(2)
+        log(INFO, "%d conectados para probing: %s", len(node_ids), node_ids)
+        
+       
+       
+       
 
         # Cria mensagem com modelo global e configs
         gmodel_record = ArrayRecord(global_model.state_dict())
@@ -95,20 +108,20 @@ def main(grid: Grid, context: Context) -> None:
                 node_id = msg.metadata.src_node_id
                 print(f"[Servidor] Mensagem recebida do node_id={node_id}")
                 probing_loss_state = msg.content["train_metrics"]["train_loss"]
-                transition = agents[node_id].state(probing_loss_state, qnet, t)
+                #transition = agents[node_id].state(probing_loss_state, qnet, t)
                 q = agents[node_id].q_value(probing_loss_state,qnet)
                 q0 = q[0].item()
                 q1 = q[1].item()
                 delta = q1 - q0
-                q_msg = f"[Q] node_id={node_id}  Q(s,0)={q0:.4f}  Q(s,1)={q1:.4f}  Δ={delta:.4f}"
+                q_msg = f"[Q] node_id={node_id}  Q(s,0)={q0:.4f}  Q(s,1)={q1:.4f}  Δ={delta:.4f}  Ploss={probing_loss_state:.4f}"
                 print(q_msg)
-                q_list.append((node_id, q0, q1, delta))
-                if transition is not None:
-                    s, a, r, s_next, t = transition
-                    joint_states.append(s)
-                    joint_actions.append(a)
-                    joint_next_states.append(s_next)
-                    print(transition)
+                q_list.append((node_id, q0, q1, delta, probing_loss_state))
+                # if transition is not None:
+                #     s, a, r, s_next, t = transition
+                #     joint_states.append(s)
+                #     joint_actions.append(a)
+                #     joint_next_states.append(s_next)
+                #     print(transition)
                 probing_losses.append(msg.content["train_metrics"]["train_loss"])
             else:
                 log(WARN, f"Erro na mensagem {msg.metadata.message_id}")
@@ -122,44 +135,61 @@ def main(grid: Grid, context: Context) -> None:
         
 
         log(INFO, "\n==== Iniciando rodada de treino ====")
-        log(INFO,t)
+        log(INFO, "Treino da rodada %d",t)
+        q_by_id = {
+            nid: {"q0": q0, "q1": q1, "delta": delta, "loss": probing_loss_state}
+            for (nid, q0, q1, delta, probing_loss_state) in q_list
+            }
+        slate_ids = [nid for nid in node_ids if nid in q_by_id]
+        if not slate_ids:
+            log(WARN, "Ninguém respondeu no probing; pulando rodada %d", t)
+            continue
         
+        k_select = max(1, int(len(node_ids)*0.6))
+        eps = epsilon_by_round(t, num_rounds, start=1.0, end=0.05, scheme="exp", warmup=20)
+       
 
-        # Loop and wait until enough nodes are available.
-        all_node_ids: list[int] = []
-        while len(all_node_ids) < min_nodes:
-            all_node_ids = list(grid.get_node_ids())
-            if len(all_node_ids) >= min_nodes:
-                # Sample nodes
-                #num_to_sample = int(len(all_node_ids) * fraction_sample)
-                k_select = int(len(all_node_ids) * fraction_sample)
-                q_score_by_node = {}
-                q_score_by_node = {nid: delta for (nid, q0, q1, delta) in q_list}
-                eps = epsilon_by_round(t)
-                do_explore = (random.random() < eps) or (len(q_score_by_node) < k_select)
-                if do_explore:
-                    node_ids_explore = random.sample(all_node_ids, k_select)
-                    log(INFO, f"[Seleção] Exploração (ε={eps:.3f}) → {k_select} nós: {sorted(node_ids_explore)}")
-                else:
-                    # Exploitation: top-k pelos maiores scores em q_list
-                    scored = [(nid, q_score_by_node.get(nid, float('-inf')))           # FIX: cria 'scored'
-                            for nid in all_node_ids]
-                    scored.sort(key=lambda x: x[1], reverse=True)
+        if (random.random() < eps) or (not q_by_id):
+            train_node_id = random.sample(node_ids, k_select)
+            reason = f"EXPLORAÇÃO (eps={eps:.3f})"
+            
 
-                    node_ids_explore = [nid for (nid, score) in scored[:k_select]]
-                    top_str = ", ".join(f"{nid}:{score:.4f}" for nid, score in scored[:k_select])
-                    log(INFO, f"[Seleção][EXPLOIT] ε={eps:.3f} → Top-{k_select} por ΔQ: [{top_str}]")
-                    # lista final de selecionados 
-                    log(INFO, f"[Seleção][EXPLOIT] Selecionados ({k_select}/{len(all_node_ids)}): {sorted(node_ids)}")
-                #node_ids = random.sample(all_node_ids, num_to_sample)
-                break
-            log(INFO, "Waiting for nodes to connect...")
-            sleep(2)
+        else:
+            #Sample nodes
+            improved = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["delta"])
+                for nid in slate_ids if q_by_id[nid]["q1"] > q_by_id[nid]["q0"]]
+            
+            if not improved:
+                train_node_id = random.sample(slate_ids, k_select)
+                reason = "Fallback (sem q1>q0)"
+            else:
+                improved.sort(key=lambda x: (x[2], x[1]), reverse=True)
+                train_node_id = [nid for (nid, _, _) in improved[:k_select]]
 
-        log(INFO, "Sampled %s nodes (out of %s)", len(node_ids_explore), len(all_node_ids))
+                reason = "EXPLOTAÇÃO (top-Δ)"
+           
+            
+
+
+        non_train_node_id = [nid for nid in slate_ids if nid not in train_node_id]
+
+        train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in train_node_id]
+        non_train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in non_train_node_id]
+
+        log(INFO, "%s → selecionados: %s", reason, train_node_id)
+        log(INFO, "Treinam (%d): %s", len(train_clients), train_clients)
+        log(INFO, "Não treinam (%d): %s", len(non_train_clients), non_train_clients)
+
+        
+        
+                         
         for server_round in range(num_rounds):
-            log(INFO, "")  
+            if not train_node_id:
+                log(WARN, "train_node_id vazio na rodada %d — encerrando o loop.", t)
+                break
             log(INFO, "Starting round %s/%s", server_round + 1, num_rounds)
+
+
 
             # Create messages
             gmodel_record = ArrayRecord(global_model.state_dict())
@@ -170,7 +200,7 @@ def main(grid: Grid, context: Context) -> None:
                 }
             )
             messages = construct_messages(t,
-                node_ids_explore, recorddict, MessageType.TRAIN, server_round
+                train_node_id, recorddict, MessageType.TRAIN, server_round
             )
 
             # Send messages and wait for all results
@@ -212,56 +242,60 @@ def main(grid: Grid, context: Context) -> None:
 
         log(INFO, f"Acurácia global = {eval_acc:.4%}")
 
-    
-        U_curr = 10.0 - 20.0 / (1.0 + math.exp(0.35 * (1.0 - eval_acc)))
+        s_t = torch.tensor([[q_by_id[nid]["loss"]] for nid in slate_ids], dtype=torch.float32)     # [N, 1]
+        a_t = torch.tensor([1 if nid in train_node_id else 0 for nid in slate_ids], dtype=torch.long)  # [N]
+        assert s_t.ndim == 2 and a_t.ndim == 1 and s_t.shape[0] == a_t.shape[0]
+        U_curr = 20.0 / (1.0 + math.exp(0.35 * (1.0 - eval_acc))) - 10.0
+        #10.0 - 20.0 / (1.0 + math.exp(0.35 * (1.0 - eval_acc)))
 
-        if acc_prev is not None:                     # a partir da 2ª rodada
-            r_t = U_curr - U_prev
-        
-            U_prev = U_curr
+        if U_prev is not None:                     # a partir da 2ª rodada
+            r_float = U_curr - U_prev
+            r_t = torch.tensor(float(r_float), dtype=torch.float32)
 
-                # Pré-processa e garante tipos/shapes antes de salvar no replay
-            s_t   = torch.stack(joint_states).detach().cpu().float()        # [N, ...]
-            a_t = torch.stack(joint_actions).detach().cpu().squeeze(-1).long()        # [N]
-            s_tp1 = torch.stack(joint_next_states).detach().cpu().float()   # [N, ...]
-            r_t   = torch.tensor(float(r_t), dtype=torch.float32)           # []
-
-            #
-            if s_t.ndim   > 2: s_t   = s_t.flatten(1)
-            if s_tp1.ndim > 2: s_tp1 = s_tp1.flatten(1)
-
-            
-            N, d = s_t.shape
-            assert a_t.shape   == (N,),      f"a_t shape {a_t.shape} != {(N,)}"
-            assert s_tp1.shape == (N, d),    f"s_tp1 shape {s_tp1.shape} != {(N, d)}"
-
+            log(INFO, "Recompensa da rodada: ΔU = U_curr - U_prev = %.6f - %.6f = %.6f",
+            U_curr, U_prev, r_float)
+            if pending_S is not None:
+                buffer.append((pending_S, pending_A, pending_r, s_t))         # ([N,d],[N],[],[N,d])
+                # Atualiza pendência com a transição da rodada atual
+                log(INFO, "Transição adicionada ao replay: S=%s A=%s r=[] S'=%s | total=%d",
+                    tuple(pending_S.shape), tuple(pending_A.shape), tuple(s_t.shape), len(buffer))
+                log(INFO, "S_t (N=%d): %s", s_t.shape[0], fmt_vec(s_t))
+                log(INFO, "A_t (N=%d): %s", a_t.shape[0], fmt_vec(a_t))
            
-            buffer.append((s_t, a_t, r_t, s_tp1))
-            print(f"# amostras no replay: {len(buffer)}")
+            pending_S, pending_A, pending_r = s_t, a_t, r_t
+            log(INFO, "Pendência atualizada: S=%s A=%s r=%.6f",
+            tuple(pending_S.shape), tuple(pending_A.shape), float(pending_r.item()))
+            
+        else:
+            # Primeira rodada: não há U_prev para delta -> só arma a pendência
+            pending_S, pending_A = s_t, a_t
+            pending_r = torch.tensor(0.0, dtype=torch.float32)  # ou pule a 1ª transição
+            log(INFO, "Primeira rodada: pendência iniciada (sem S_{t+1} ainda).")
+            
             
         U_prev = U_curr 
-        acc_prev = eval_acc 
+        
 
-        joint_states.clear()
-        joint_actions.clear()
-        joint_next_states.clear()
 
-        print(buffer.storage) 
+        #print(buffer.storage) 
 
         batch_size    = 32
-        learn_start   = 128          # mínimo no buffer para começar a aprender
-        gradient_steps = 16          # G updates por rodada (aumente depois p/ 32)
+        learn_start   = 128         
+        gradient_steps = min(32, max(1, len(buffer) // (8*batch_size)))        
         gamma         = 0.99
         tau           = 0.01         
         clip_grad     = 10.0
+        target_update_every  = None
         opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
-        if len(buffer) >= 2:
+        if len(buffer) >= 32:
+            log(INFO, "\n==== Iniciando Treinamento DQN e agregação VDN ====")
+            log(INFO, "VDN: replay=%d, batch=%d ⇒ gradient_steps=%d",
+            len(buffer), batch_size, gradient_steps)
+            
+
             for _ in range(gradient_steps):
-                # if len(buffer) < batch_size:
-                #     break
-                # 1) Amostrar minibatch [B,N,d],
-                # uniforme:
-                s, a, r, s_next = buffer.sample_uniform(batch_size=2, device=device)
+                
+                s, a, r, s_next = buffer.sample_uniform(batch_size=16, device=device)
 
                 # print(">>> SHAPES / DTYPES")
                 # print("s      :", s.shape,  s.dtype)      # [2, N, d]
@@ -269,30 +303,13 @@ def main(grid: Grid, context: Context) -> None:
                 # print("r      :", r.shape,  r.dtype)      # [2],   torch.float32
                 # print("s_next :", s_next.shape, s_next.dtype)
 
-                # checagens rápidas
                 B, N, d = s.shape
-                assert a.shape == (B, N)
-                assert r.shape == (B,)
-                assert s_next.shape == (B, N, d)
+                assert a.shape == (B, N),      f"a {a.shape} != {(B,N)}"
+                assert r.shape == (B,),        f"r {r.shape} != {(B,)}"
+                assert s_next.shape == (B,N,d),f"s_next {s_next.shape} != {(B,N,d)}"
+                assert a.dtype == torch.int64, "Ações devem ser long (int64)"
 
-            #     # conteúdo das duas amostras
-            #     print("\n>>> AMOSTRA 0")
-            #     print("s[0]:\n", s[0])               # [N, d]
-            #     print("a[0]:", a[0].tolist())        # [N]
-            #     print("r[0]:", float(r[0]))          # escalar
-            #     print("s_next[0]:\n", s_next[0])     # [N, d]
-
-            #     print("\n>>> AMOSTRA 1")
-            #     print("s[1]:\n", s[1])
-            #     print("a[1]:", a[1].tolist())
-            #     print("r[1]:", float(r[1]))
-            #     print("s_next[1]:\n", s_next[1])
-            # else:
-            #     print(f"replay insuficiente: {len(buffer)} < {batch_size}")
-
-                # OU híbrido (recomendado p/ novas transiçoes entrarem rapido):
-                #s, a, r, s_next = buffer.sample_hybrid(batch_size=32, recent_k=512, m_recent=8, device=device)
-
+            
                 loss = AgentMARL.vdn_double_dqn_loss(qnet, target_qnet, s, a, r, s_next, gamma)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
@@ -352,3 +369,29 @@ def average_state_dicts(state_dicts):
 
 
 
+def epsilon_by_round(t, total_rounds, start=1.0, end=0.05, scheme="exp", warmup=3):
+    # warm-up (100% aleatório nas primeiras rodadas)
+    if t < warmup:
+        return 1.0
+    t_eff = max(0, t - warmup)
+
+    if scheme == "exp":     # exponencial 
+        decay = max(1, int(0.3 * total_rounds))  # meia-vida ~30% das rodadas
+        return end + (start - end) * math.exp(-t_eff / decay)
+    elif scheme == "linear":  # linear
+        decay = max(1, int(0.6 * total_rounds))
+        return max(end, start - (start - end) * (t_eff / decay))
+    else:
+        return max(end, start)  # fallback
+    
+
+def fmt_vec(t, k=15):
+    """Converte tensor para lista (com truncagem opcional)."""
+    v = t.detach().cpu()
+    if v.ndim == 2 and v.shape[1] == 1:  # [N,1] -> [N]
+        v = v.squeeze(1)
+    lst = v.tolist()
+    n = len(lst)
+    if n <= k:
+        return str(lst)
+    return f"{lst[:k]} ... (+{n-k} itens)"
