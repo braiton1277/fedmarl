@@ -14,8 +14,11 @@ app = ClientApp()
 def evaluate(msg: Message, context: Context):
 
     # Prepare
-    model, device, data_loader = setup_client(msg, context, is_train=False)
+    t = msg.content["node-info"]["server_round"]
+    node_id = msg.content["node-info"]["node_id"]
+    model, device, data_loader = setup_client(t, node_id, msg, context, is_train=False)
 
+    
     # Local evaluation
     _, eval_acc = test_fn(
         model,
