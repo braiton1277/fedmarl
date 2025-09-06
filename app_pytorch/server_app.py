@@ -6,13 +6,17 @@ from logging import INFO, WARN
 from pathlib import Path
 from time import sleep
 
+#ver como fazer o evaluate
+import numpy as np
+#import wandb
 import torch
+import torch.optim as optim
 from flwr.common import (ArrayRecord, ConfigRecord, Context, Message,
                          MessageType, RecordDict)
 from flwr.common.logger import log
 from flwr.server import Grid, ServerApp
 
-from app_pytorch.agent_marl import AgentMARL, QNet
+from app_pytorch.agent_marl import AgentMARL, QNet, treino
 from app_pytorch.replay_buffer import ReplayBuffer
 from app_pytorch.task import Net, load_global_testloader
 from app_pytorch.task import test as test_fn
@@ -27,7 +31,19 @@ from app_pytorch.task import test as test_fn
 
 #fazer 1000 rodadas com 256 min
 
-#ver como fazer o evaluate
+n_agents  = 5
+obs_dim   = 1
+n_actions = 2
+
+class Discrete:
+    def __init__(self, n): self.n = n
+
+observation_space = np.zeros((n_agents, obs_dim), dtype=np.float32) 
+action_space = [Discrete(n_actions) for _ in range(n_agents)]
+
+
+
+
 
 def cleanup_stats_dir(dir_path="clients"):
     p = Path(dir_path).resolve()
@@ -41,26 +57,41 @@ app = ServerApp()
 
 @app.main()
 def main(grid: Grid, context: Context) -> None:
-    # num_rounds = context.run_config["num-server-rounds"]
-    num_rounds = 4
+    lr = 0.001
+    batch_size = 32
+    gamma = 0.99
+    buffer_limit = 5000
+    update_target_interval = 20
+    log_interval = 100
+    max_episodes = 200
+    max_epsilon = 0.9
+    min_epsilon = 0.1
+    test_episodes = 5
+    warm_up_steps = 32
+    update_iter = 10
+    chunk_size = 1
+    num_rounds = 1
     num_rounds_total = 100
     min_nodes = 2
     fraction_sample = context.run_config["fraction-sample"]
+    memory = ReplayBuffer(buffer_limit)
+    recurrent = True
     #device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     device = torch.device("cpu")
-    qnet = QNet(obs_dim=1, hidden=128).to(device)
-    target_qnet = QNet(obs_dim=1, hidden=128).to(device)
-    target_qnet.load_state_dict(qnet.state_dict())
-    opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
-    buffer = ReplayBuffer(capacity=50_000)
-    
-
+    # qnet = QNet(obs_dim=1, hidden=128).to(device)
+    # target_qnet = QNet(obs_dim=1, hidden=128).to(device)
+    # target_qnet.load_state_dict(qnet.state_dict())
+    # opt = torch.optim.Adam(qnet.parameters(), lr=3e-4)
+    q        = QNet(observation_space, action_space, recurrent)
+    q_target = QNet(observation_space, action_space, recurrent)
+    optimizer = optim.Adam(q.parameters(), lr = lr)
 
     # Inicializa o modelo global
     global_model = Net()
     global_model_key = "model"
     teste_global = load_global_testloader()        
     U_prev   = None
+    r_t = None
     pending_S, pending_A, pending_r = None, None, None
     log(INFO, "\n==== Conectado clientes ====")
 
@@ -75,18 +106,20 @@ def main(grid: Grid, context: Context) -> None:
     agents = {node_id: AgentMARL(node_id) for node_id in node_ids_agents}
     t =0
     log(INFO, "%d Clientes conectados com agente: %s",len(node_ids_agents), node_ids_agents)
-
+    score = 0
+    next_state = None
     log(INFO, "\n==== Iniciando rodada de probing ====")
-    while t < num_rounds_total:
-        if t == 0:
+    for episode_i in range(max_episodes):
+        if episode_i == 0:
             cleanup_stats_dir("clients")
-        t+=1
-        log(INFO, "Rodada de numero: %d",t)
-        
-        
+
+        epsilon = max(min_epsilon, max_epsilon - (max_epsilon - min_epsilon) * (episode_i / (0.6 * max_episodes)))
+        log(INFO, "Rodada de numero: %d",episode_i)
+        # done = [False for _ in range(env.n_agents)]
+        done = False 
         
         if len(all_node_ids) >= min_nodes:
-            num_to_sample = int(len(all_node_ids) * 0.6)
+            num_to_sample = int(len(all_node_ids) * 1)
             node_ids = random.sample(all_node_ids, num_to_sample)
         else:
             log(INFO, "Não há nós suficiente")
@@ -119,23 +152,26 @@ def main(grid: Grid, context: Context) -> None:
 
         # Coleta probing losses
         probing_losses = []
-        q_list = []
+        loss_map = {}
+        node_ids = []
         for msg in replies:
             if msg.has_content():
                 node_id = msg.metadata.src_node_id
                 print(f"[Servidor] Mensagem recebida do node_id={node_id}")
                 probing_loss_state = msg.content["train_metrics"]["train_loss"]
-                with torch.no_grad():
-                    s_probe = torch.tensor([[float(probing_loss_state)]],
-                                        dtype=torch.float32, device=device)  # [1,1]
-                    q = agents[node_id].q_value(s_probe,qnet)
-                q0 = q[0].item()
-                q1 = q[1].item()
-                delta = q1 - q0
-                q_msg = f"[Q] node_id={node_id}  Q(s,0)={q0:.4f}  Q(s,1)={q1:.4f}  Δ={delta:.4f}  Ploss={probing_loss_state:.4f}"
-                print(q_msg)
-                q_list.append((node_id, q0, q1, delta, probing_loss_state))
+                # with torch.no_grad():
+                #     s_probe = torch.tensor([[float(probing_loss_state)]],
+                #                         dtype=torch.float32, device=device)  # [1,1]
+                #     q = agents[node_id].q_value(s_probe,qnet)
+                # q0 = q[0].item()
+                # q1 = q[1].item()
+                # delta = q1 - q0
+                # q_msg = f"[Q] node_id={node_id}  Q(s,0)={q0:.4f}  Q(s,1)={q1:.4f}  Δ={delta:.4f}  Ploss={probing_loss_state:.4f}"
+                # print(q_msg)
+                # round_pairs.append((node_id, probing_loss_state))
+                node_ids.append(node_id)
                 probing_losses.append(msg.content["train_metrics"]["train_loss"])
+                loss_map[node_id] = probing_loss_state
             else:
                 log(WARN, f"Erro na mensagem {msg.metadata.message_id}")
 
@@ -144,59 +180,133 @@ def main(grid: Grid, context: Context) -> None:
             log(INFO, f"Probing loss média: {sum(probing_losses)/len(probing_losses):.3f}")
         else:
             log(WARN, "Nenhuma probing loss recebida!")
+
+        sorted_losses =[loss_map[nid] for nid in sorted(loss_map.keys())]
+        print("sorted_losses",sorted_losses)
+
+        state = torch.as_tensor(sorted_losses, dtype=torch.float32).view(1, -1, 1)
         
+        done = [False] * 5
+        with torch.no_grad():
+            hidden = q.init_hidden()
+            if (next_state is not None) and (r_t is not None):
+                # while not all(done):
+                print('AAAAAAAA')
+                action, hidden = q.sample_action(state, hidden, epsilon)
+                action = action[0].data.cpu().numpy().tolist()
+                print("r_t",r_t)
+                r_t = [r_t] * n_agents
+                state = state.squeeze()
+                next_state = next_state.squeeze()
+                next_state = next_state.cpu().numpy().tolist()
+                state = state.cpu().numpy().tolist()
+                r_t = [r.item() if torch.is_tensor(r) else float(r) for r in r_t]
+                memory.put((state, action, r_t, next_state, [int(all(done))]))
+
+                # score += sum(r_t)
+                print("r_t",r_t)
+                print("state",state)
+                print("action",action)
+                print("next_state",next_state)
+                next_state = state
+            else:
+                action, hidden = q.sample_action(state, hidden, epsilon)
+                action = action[0].data.cpu().numpy().tolist()
+                next_state = state
+            
         
+            if isinstance(action, torch.Tensor):
+                action = action.detach().cpu().squeeze().tolist()
+
+            node_actions = dict(zip(node_ids, action))
+            action = list(map(int, action))  # [0,0,1,1,0]
+            # print(f"node_ids={node_ids}  (len={len(node_ids)})")
+            # print(f"actions={action}    (len={len(action)})")
+            # print("node actions %s", node_actions)
+
+        
+        if memory.size() > warm_up_steps:
+            treino(q, q_target, memory, optimizer, gamma, batch_size, update_iter, chunk_size)
+        
+        if episode_i % update_target_interval:
+            q_target.load_state_dict(q.state_dict())
+
+        # if (episode_i + 1) % log_interval ==0:
+        #     test_score = test(test_env, test_episodes, q)
+        #     train_score = score / log_interval
+        #     print("#{:<10/10}/{} episodes , avg train score : {:.1f}, test score {:.1f} n_buffer : {}, eps : {:.1f}" 
+        #         .format(episode_i, max_episodes, train_score, test_score, memory.size(), epsilon))
+            
+            # if USE_WANDB:
+            #     wandb.log({"episode": episode_i})
+
+            score = 0
+
 
         log(INFO, "\n==== Iniciando rodada de treino ====")
-        log(INFO, "Treino da rodada %d",t)
-        q_by_id = {
-            nid: {"q0": q0, "q1": q1, "delta": delta, "loss": probing_loss_state}
-            for (nid, q0, q1, delta, probing_loss_state) in q_list
-            }
-        slate_ids = [nid for nid in node_ids if nid in q_by_id]
-        if not slate_ids:
-            log(WARN, "Ninguém respondeu no probing; pulando rodada %d", t)
-            continue
+        log(INFO, "Treino da rodada %d",episode_i)
+        # q_by_id = {
+        #     nid: {"q0": q0, "q1": q1, "delta": delta, "loss": probing_loss_state}
+        #     for (nid, q0, q1, delta, probing_loss_state) in q_list
+        #     }
+        # slate_ids = [nid for nid in node_ids if nid in q_by_id]
+        # if not slate_ids:
+        #     log(WARN, "Ninguém respondeu no probing; pulando rodada %d", t)
+        #     continue
         
-        k_select = max(1, int(len(node_ids)*0.6))
-        eps = epsilon_by_round(t, num_rounds_total, start=1.0, end=0.05, scheme="exp", warmup=20)
+        # k_select = max(1, int(len(node_ids)*0.6))
+        # eps = epsilon_by_round(t, num_rounds_total, start=1.0, end=0.05, scheme="exp", warmup=20)
        
 
-        if (random.random() < eps) or (not q_by_id):
-            train_node_id = random.sample(node_ids, k_select)
-            reason = f"EXPLORAÇÃO (eps={eps:.3f})"
+        # if (random.random() < eps) or (not q_by_id):
+        #     train_node_id = random.sample(node_ids, k_select)
+        #     reason = f"EXPLORAÇÃO (eps={eps:.3f})"
             
 
-        else:
-            #Sample nodes
-            improved = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["delta"])
-                for nid in slate_ids if q_by_id[nid]["q1"] > q_by_id[nid]["q0"]]
+        # else:
+        #     #Sample nodes
+        #     improved = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["delta"])
+        #         for nid in slate_ids if q_by_id[nid]["q1"] > q_by_id[nid]["q0"]]
             
-            if not improved:
-                train_node_id = random.sample(slate_ids, k_select)
-                reason = "Fallback (sem q1>q0)"
-            else:
-                improved.sort(key=lambda x: (x[2], x[1]), reverse=True)
-                train_node_id = [nid for (nid, _, _) in improved[:k_select]]
+        #     if not improved:
+        #         train_node_id = random.sample(slate_ids, k_select)
+        #         reason = "Fallback (sem q1>q0)"
+        #     else:
+        #         improved.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        #         train_node_id = [nid for (nid, _, _) in improved[:k_select]]
 
-                reason = "EXPLOTAÇÃO (top-Δ)"
+        #         reason = "EXPLOTAÇÃO (top-Δ)"
            
             
 
 
-        non_train_node_id = [nid for nid in slate_ids if nid not in train_node_id]
+        # non_train_node_id = [nid for nid in slate_ids if nid not in train_node_id]
 
-        train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in train_node_id]
-        non_train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in non_train_node_id]
+        # train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in train_node_id]
+        # non_train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in non_train_node_id]
 
-        log(INFO, "%s → selecionados: %s", reason, train_node_id)
-        log(INFO, "Treinam (%d): %s", len(train_clients), train_clients)
-        log(INFO, "Não treinam (%d): %s", len(non_train_clients), non_train_clients)
+        # train_node_id = [nid for nid in node_ids if int(node_actions[nid]) == 1]
+        # non_train_node_id = [nid for nid in node_ids if int(node_actions[nid]) == 0]
 
+        train_node_id     = [nid for nid, act in node_actions.items() if int(act) == 1]
+        non_train_node_id = [nid for nid, act in node_actions.items() if int(act) == 0]
+
+        # train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in train_node_id]
+        # non_train_clients = [(nid, q_by_id[nid]["q1"], q_by_id[nid]["loss"]) for nid in non_train_node_id]
+
+
+
+
+        # log(INFO, "%s → selecionados: %s", reason, train_node_id)
+        # log(INFO, "Treinam (%d): %s", len(train_clients), train_clients)
+        # log(INFO, "Não treinam (%d): %s", len(non_train_clients), non_train_clients)
+
+        log(INFO, "Treinam (%d): %s", len(train_node_id), train_node_id)
+        log(INFO, "Não treinam (%d): %s", len(non_train_node_id), non_train_node_id)
         
         
                          
-        for server_round in range(num_rounds):
+        for server_round in range(1):
             if not train_node_id:
                 log(WARN, "train_node_id vazio na rodada %d — encerrando o loop.", t)
                 break
@@ -254,9 +364,9 @@ def main(grid: Grid, context: Context) -> None:
 
         log(INFO, f"Acurácia global = {eval_acc:.4%}")
 
-        s_t = torch.tensor([[q_by_id[nid]["loss"]] for nid in slate_ids], dtype=torch.float32)     # [N, 1]
-        a_t = torch.tensor([1 if nid in train_node_id else 0 for nid in slate_ids], dtype=torch.long)  # [N]
-        assert s_t.ndim == 2 and a_t.ndim == 1 and s_t.shape[0] == a_t.shape[0]
+        # s_t = torch.tensor([[q_by_id[nid]["loss"]] for nid in slate_ids], dtype=torch.float32)     # [N, 1]
+        # a_t = torch.tensor([1 if nid in train_node_id else 0 for nid in slate_ids], dtype=torch.long)  # [N]
+        # assert s_t.ndim == 2 and a_t.ndim == 1 and s_t.shape[0] == a_t.shape[0]
         U_curr = 20.0 / (1.0 + math.exp(0.35 * (1.0 - eval_acc))) - 10.0
         #10.0 - 20.0 / (1.0 + math.exp(0.35 * (1.0 - eval_acc)))
 
@@ -266,23 +376,23 @@ def main(grid: Grid, context: Context) -> None:
 
             log(INFO, "Recompensa da rodada: ΔU = U_curr - U_prev = %.6f - %.6f = %.6f",
             U_curr, U_prev, r_float)
-            if pending_S is not None:
-                buffer.append((pending_S, pending_A, pending_r, s_t))         # ([N,d],[N],[],[N,d])
-                # Atualiza pendência com a transição da rodada atual
-                log(INFO, "Transição adicionada ao replay: S=%s A=%s r=[] S'=%s | total=%d",
-                    tuple(pending_S.shape), tuple(pending_A.shape), tuple(s_t.shape), len(buffer))
-                log(INFO, "S_t (N=%d): %s", s_t.shape[0], fmt_vec(s_t))
-                log(INFO, "A_t (N=%d): %s", a_t.shape[0], fmt_vec(a_t))
+            # if pending_S is not None:
+            #     buffer.append((pending_S, pending_A, pending_r, s_t))         # ([N,d],[N],[],[N,d])
+            #     # Atualiza pendência com a transição da rodada atual
+            #     log(INFO, "Transição adicionada ao replay: S=%s A=%s r=[] S'=%s | total=%d",
+            #         tuple(pending_S.shape), tuple(pending_A.shape), tuple(s_t.shape), len(buffer))
+            #     log(INFO, "S_t (N=%d): %s", s_t.shape[0], fmt_vec(s_t))
+            #     log(INFO, "A_t (N=%d): %s", a_t.shape[0], fmt_vec(a_t))
            
-            pending_S, pending_A, pending_r = s_t, a_t, r_t
-            log(INFO, "Pendência atualizada: S=%s A=%s r=%.6f",
-            tuple(pending_S.shape), tuple(pending_A.shape), float(pending_r.item()))
+            # pending_S, pending_A, pending_r = s_t, a_t, r_t
+            # log(INFO, "Pendência atualizada: S=%s A=%s r=%.6f",
+            # tuple(pending_S.shape), tuple(pending_A.shape), float(pending_r.item()))
             
-        else:
-            # Primeira rodada: não há U_prev para delta -> só arma a pendência
-            pending_S, pending_A = s_t, a_t
-            pending_r = torch.tensor(0.0, dtype=torch.float32)  # ou pule a 1ª transição
-            log(INFO, "Primeira rodada: pendência iniciada (sem S_{t+1} ainda).")
+        # else:
+        #     # Primeira rodada: não há U_prev para delta -> só arma a pendência
+        #     pending_S, pending_A = s_t, a_t
+        #     pending_r = torch.tensor(0.0, dtype=torch.float32)  # ou pule a 1ª transição
+        #     log(INFO, "Primeira rodada: pendência iniciada (sem S_{t+1} ainda).")
             
             
         U_prev = U_curr 
@@ -300,45 +410,45 @@ def main(grid: Grid, context: Context) -> None:
 
 
 
-        batch_size    = 32    
-        gradient_steps = min(32, max(1, len(buffer) // (8*batch_size)))        
-        gamma         = 0.99
-        tau           = 0.01         
-        clip_grad     = 10.0
-        target_update_every  = None
-        if len(buffer) >= 50:
-            log(INFO, "\n==== Iniciando Treinamento DQN e agregação VDN ====")
-            log(INFO, "VDN: replay=%d, batch=%d ⇒ gradient_steps=%d",
-            len(buffer), batch_size, gradient_steps)
+        # batch_size    = 32    
+        # gradient_steps = min(32, max(1, len(buffer) // (8*batch_size)))        
+        # gamma         = 0.99
+        # tau           = 0.01         
+        # clip_grad     = 10.0
+        # target_update_every  = None
+        # if len(buffer) >= 50:
+        #     log(INFO, "\n==== Iniciando Treinamento DQN e agregação VDN ====")
+        #     log(INFO, "VDN: replay=%d, batch=%d ⇒ gradient_steps=%d",
+        #     len(buffer), batch_size, gradient_steps)
             
 
-            for _ in range(gradient_steps):
+        #     for _ in range(gradient_steps):
                 
-                s, a, r, s_next = buffer.sample_uniform(batch_size=32, device=device)
+        #         s, a, r, s_next = buffer.sample_uniform(batch_size=32, device=device)
 
-                # print(">>> SHAPES / DTYPES")
-                # print("s      :", s.shape,  s.dtype)      # [2, N, d]
-                # print("a      :", a.shape,  a.dtype)      # [2, N], torch.int64
-                # print("r      :", r.shape,  r.dtype)      # [2],   torch.float32
-                # print("s_next :", s_next.shape, s_next.dtype)
+        #         # print(">>> SHAPES / DTYPES")
+        #         # print("s      :", s.shape,  s.dtype)      # [2, N, d]
+        #         # print("a      :", a.shape,  a.dtype)      # [2, N], torch.int64
+        #         # print("r      :", r.shape,  r.dtype)      # [2],   torch.float32
+        #         # print("s_next :", s_next.shape, s_next.dtype)
 
-                B, N, d = s.shape
-                assert a.shape == (B, N),      f"a {a.shape} != {(B,N)}"
-                assert r.shape == (B,),        f"r {r.shape} != {(B,)}"
-                assert s_next.shape == (B,N,d),f"s_next {s_next.shape} != {(B,N,d)}"
-                assert a.dtype == torch.int64, "Ações devem ser long (int64)"
+        #         B, N, d = s.shape
+        #         assert a.shape == (B, N),      f"a {a.shape} != {(B,N)}"
+        #         assert r.shape == (B,),        f"r {r.shape} != {(B,)}"
+        #         assert s_next.shape == (B,N,d),f"s_next {s_next.shape} != {(B,N,d)}"
+        #         assert a.dtype == torch.int64, "Ações devem ser long (int64)"
 
             
-                loss = AgentMARL.vdn_double_dqn_loss(qnet, target_qnet, s, a, r, s_next, gamma)
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(qnet.parameters(), 10.0)
-                opt.step()
+        #         loss = AgentMARL.vdn_double_dqn_loss(qnet, target_qnet, s, a, r, s_next, gamma)
+        #         opt.zero_grad(set_to_none=True)
+        #         loss.backward()
+        #         torch.nn.utils.clip_grad_norm_(qnet.parameters(), 10.0)
+        #         opt.step()
 
-                # Polyak update da target
-                with torch.no_grad():
-                    for p, pt in zip(qnet.parameters(), target_qnet.parameters()):
-                        pt.data.mul_(1 - tau).add_(tau * p.data)
+        #         # Polyak update da target
+        #         with torch.no_grad():
+        #             for p, pt in zip(qnet.parameters(), target_qnet.parameters()):
+        #                 pt.data.mul_(1 - tau).add_(tau * p.data)
 
 
 

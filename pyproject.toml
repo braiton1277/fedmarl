@@ -33,4 +33,4 @@ local-epochs = 3
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 25
+options.num-supernodes = 5
