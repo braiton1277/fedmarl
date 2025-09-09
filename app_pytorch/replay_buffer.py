@@ -95,17 +95,21 @@ class ReplayBuffer:
         for idx in start_idx:
             for chunk_step in range(idx, idx + chunk_size):
                 s, a, r, s_prime, done = self.buffer[chunk_step]
-                s_lst.append(s)
+                s_lst.append(torch.as_tensor(s, dtype=torch.float))
                 a_lst.append(a)
                 r_lst.append(r)
-                s_prime_lst.append(s_prime)
+                s_prime_lst.append(torch.as_tensor(s_prime, dtype=torch.float))
                 done_lst.append(done)
 
+
+    
+
+
         n_agents, obs_size = len(s_lst[0]), len(s_lst[0][0])
-        return torch.tensor(s_lst, dtype=torch.float).view(batch_size, chunk_size, n_agents, obs_size), \
+        return torch.stack(s_lst).view(batch_size, chunk_size, n_agents, obs_size), \
                torch.tensor(a_lst, dtype=torch.float).view(batch_size, chunk_size, n_agents), \
                torch.tensor(r_lst, dtype=torch.float).view(batch_size, chunk_size, n_agents), \
-               torch.tensor(s_prime_lst, dtype=torch.float).view(batch_size, chunk_size, n_agents, obs_size), \
+               torch.stack(s_prime_lst).view(batch_size, chunk_size, n_agents, obs_size), \
                torch.tensor(done_lst, dtype=torch.float).view(batch_size, chunk_size, 1)
 
     def size(self):

@@ -61,7 +61,7 @@ def main(grid: Grid, context: Context) -> None:
     batch_size = 32
     gamma = 0.99
     buffer_limit = 5000
-    update_target_interval = 20
+    update_target_interval = 5
     log_interval = 100
     max_episodes = 200
     max_epsilon = 0.9
@@ -92,6 +92,7 @@ def main(grid: Grid, context: Context) -> None:
     teste_global = load_global_testloader()        
     U_prev   = None
     r_t = None
+    action = None
     pending_S, pending_A, pending_r = None, None, None
     log(INFO, "\n==== Conectado clientes ====")
 
@@ -107,7 +108,7 @@ def main(grid: Grid, context: Context) -> None:
     t =0
     log(INFO, "%d Clientes conectados com agente: %s",len(node_ids_agents), node_ids_agents)
     score = 0
-    next_state = None
+    state = None
     log(INFO, "\n==== Iniciando rodada de probing ====")
     for episode_i in range(max_episodes):
         if episode_i == 0:
@@ -184,42 +185,56 @@ def main(grid: Grid, context: Context) -> None:
         sorted_losses =[loss_map[nid] for nid in sorted(loss_map.keys())]
         print("sorted_losses",sorted_losses)
 
-        state = torch.as_tensor(sorted_losses, dtype=torch.float32).view(1, -1, 1)
+        next_state = torch.as_tensor(sorted_losses, dtype=torch.float32).view(1, -1, 1)
         
         done = [False] * 5
         with torch.no_grad():
             hidden = q.init_hidden()
-            if (next_state is not None) and (r_t is not None):
+            if (state is not None) and (r_t is not None):
                 # while not all(done):
                 print('AAAAAAAA')
-                action, hidden = q.sample_action(state, hidden, epsilon)
-                action = action[0].data.cpu().numpy().tolist()
+                next_state_list = next_state.squeeze(0)
+                next_state_list = next_state_list.cpu().numpy().tolist()
+                #action, hidden = q.sample_action(next_state, hidden, epsilon)
+                #action = action[0].data.cpu().numpy().tolist()
                 print("r_t",r_t)
                 r_t = [r_t] * n_agents
-                state = state.squeeze()
-                next_state = next_state.squeeze()
-                next_state = next_state.cpu().numpy().tolist()
-                state = state.cpu().numpy().tolist()
+                #next_state = next_state.squeeze(0)
+                #next_state = next_state.cpu().numpy().tolist()
                 r_t = [r.item() if torch.is_tensor(r) else float(r) for r in r_t]
-                memory.put((state, action, r_t, next_state, [int(all(done))]))
+                memory.put((state, action, r_t, next_state_list, [int(all(done))]))
+
+
+
+                action_next, hidden = q.sample_action(next_state, hidden, epsilon)
+                action_next = action_next[0].data.cpu().numpy().tolist()
+                
 
                 # score += sum(r_t)
+                print("next_state", next_state_list)
                 print("r_t",r_t)
                 print("state",state)
                 print("action",action)
-                print("next_state",next_state)
-                next_state = state
+                print("action_next", action_next)
+                
+                action = action_next
+                state = next_state_list
+                
+                
             else:
-                action, hidden = q.sample_action(state, hidden, epsilon)
-                action = action[0].data.cpu().numpy().tolist()
-                next_state = state
-            
-        
-            if isinstance(action, torch.Tensor):
-                action = action.detach().cpu().squeeze().tolist()
+                action_next, hidden = q.sample_action(next_state, hidden, epsilon)
+                action_next = action_next[0].data.cpu().numpy().tolist()
+                
+                next_state = next_state.squeeze(0)
+                next_state = next_state.cpu().numpy().tolist()
+                state  = next_state
+                action = action_next
 
-            node_actions = dict(zip(node_ids, action))
-            action = list(map(int, action))  # [0,0,1,1,0]
+            if isinstance(action_next, torch.Tensor):
+                action_next = action_next.detach().cpu().squeeze().tolist()
+
+            node_actions = dict(zip(node_ids, action_next))
+            action_next = list(map(int, action_next))  # [0,0,1,1,0]
             # print(f"node_ids={node_ids}  (len={len(node_ids)})")
             # print(f"actions={action}    (len={len(action)})")
             # print("node actions %s", node_actions)
